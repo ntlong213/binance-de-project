@@ -1,0 +1,8 @@
+root = true
+
+[*]
+end_of_line = lf
+insert_final_newline = true
+
+[*.{png,jpg,jpeg,gif,bmp,ico,pdf}]
+end_of_line = unset

@@ -1,0 +1,164 @@
+networks:
+  de-net:
+    driver: bridge
+
+volumes:
+  minio_data:
+  clickhouse_data:
+  grafana_data:
+
+services:
+
+  # =============================================================
+  # KAFKA (KRaft — no ZooKeeper)
+  # =============================================================
+  kafka:
+    image: apache/kafka:3.8.0
+    container_name: kafka-pj
+    hostname: kafka
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_EXTERNAL://0.0.0.0:29092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_EXTERNAL://localhost:29092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_NUM_PARTITIONS: 3
+    networks:
+      - de-net
+    restart: unless-stopped
+
+  # =============================================================
+  # KAFKA UI  →  http://localhost:8090
+  # =============================================================
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui-pj
+    depends_on:
+      - kafka
+    ports:
+      - "8090:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+    networks:
+      - de-net
+    restart: unless-stopped
+
+  # =============================================================
+  # SPARK MASTER  →  http://localhost:8080
+  # =============================================================
+  spark-master:
+    image: apache/spark:3.5.0
+    container_name: spark-master-pj
+    hostname: spark-master
+    entrypoint: [ "/opt/spark/bin/spark-class", "org.apache.spark.deploy.master.Master" ]
+    environment:
+      SPARK_MASTER_HOST: spark-master # bind đúng hostname trong Docker network
+    ports:
+      - "8080:8080" # Spark Web UI
+      - "7077:7077" # Spark master port
+    volumes:
+      - ./spark-ivy:/tmp/.ivy
+      - ./apps:/opt/spark-apps
+    networks:
+      - de-net
+    restart: unless-stopped
+
+  # =============================================================
+  # SPARK WORKER
+  # =============================================================
+  spark-worker:
+    image: apache/spark:3.5.0
+    container_name: spark-worker-pj
+    hostname: spark-worker
+    depends_on:
+      - spark-master
+    entrypoint:
+      - "/opt/spark/bin/spark-class"
+      - "org.apache.spark.deploy.worker.Worker"
+      - "spark://spark-master:7077"
+    environment:
+      SPARK_WORKER_MEMORY: ${SPARK_WORKER_MEMORY}
+      SPARK_WORKER_CORES: ${SPARK_WORKER_CORES}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      KAFKA_BROKERS: kafka:9092
+      MINIO_ENDPOINT: http://minio:9000
+    ports:
+      - "8081:8081" # Worker Web UI
+    volumes:
+      - ./spark-ivy:/tmp/.ivy
+      - ./apps:/opt/spark-apps
+    networks:
+      - de-net
+    restart: unless-stopped
+
+  # =============================================================
+  # MINIO (Data Lake — S3-compatible)
+  # API    →  http://localhost:9000
+  # Console →  http://localhost:9001
+  # =============================================================
+  minio:
+    image: minio/minio:latest
+    container_name: minio-pj
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+    networks:
+      - de-net
+    restart: unless-stopped
+
+  # =============================================================
+  # CLICKHOUSE (Data Warehouse)
+  # HTTP   →  http://localhost:8123
+  # Native →  localhost:9900
+  # =============================================================
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.3
+    container_name: clickhouse-pj
+    hostname: clickhouse
+    environment:
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+    ports:
+      - "8123:8123" # HTTP (Spark JDBC, client queries)
+      - "9900:9000" # Native protocol (tránh xung đột với MinIO 9000)
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - ./clickhouse/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - de-net
+    restart: unless-stopped
+
+  # =============================================================
+  # GRAFANA (Dashboard)  →  http://localhost:3000
+  # =============================================================
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana-pj
+    depends_on:
+      - clickhouse
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+    volumes:
+      - grafana_data:/var/lib/grafana
+    networks:
+      - de-net
+    restart: unless-stopped

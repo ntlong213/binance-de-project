@@ -9,6 +9,7 @@ Captures live trade, kline (OHLCV), and book ticker data from Binance WebSocket 
 ---
 
 ## Architecture
+<img width="1123" height="436" alt="Screenshot 2026-04-28 155308" src="https://github.com/user-attachments/assets/707231dd-c52d-4806-8ccb-5bde8048724d" />
 
 ### System Design
 
